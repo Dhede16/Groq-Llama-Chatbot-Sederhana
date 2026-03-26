@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────
+#  WAJIB: Jangan pernah upload file ini!
+# ─────────────────────────────────────────────
+
+# File environment (berisi API key & secrets)
+.env
+.env.local
+.env.production
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Log files
+*.log
+
+# Build / dist
+dist/
+build/
+*.egg-info/
