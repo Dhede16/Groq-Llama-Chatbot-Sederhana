@@ -80,7 +80,6 @@ python groq_chatbot.py
 groq-llama-chatbot/
 ├── groq_chatbot.py     # Script utama
 ├── requirements.txt    # Dependensi Python
-├── .env.example        # Template konfigurasi (aman di-commit)
 ├── .gitignore          # File yang diabaikan Git
 └── README.md           # Dokumentasi ini
 ```
