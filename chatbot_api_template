@@ -1,0 +1,55 @@
+from fastapi import FastAPI
+from pydantic import BaseModel
+from groq import Groq
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
+app = FastAPI()
+
+client = Groq(
+    api_key="API KEY HERE"
+)
+
+conversation_history = [
+    {
+        "role": "system",
+        "content": "Kamu adalah Jarvis AI."
+    }
+]
+
+# hapus jika hanya ingin hardcode question
+class ChatRequest(BaseModel):
+    message: str
+
+@app.post("/chat")
+async def chat(req: ChatRequest): # hapus req: ChatRequest jika ingin hardcode question
+
+    # pertanyaan hardcode
+    hardcode_question = ""
+    # Variabel pertanyaan user 
+    user_question = req.message
+
+    conversation_history.append({
+        "role": "user",
+        "content": user_question # + tambahkan hardcode question jika ingin 
+    })
+
+    response = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=conversation_history
+    )
+
+    ai_reply = response.choices[0].message.content
+
+    conversation_history.append({
+        "role": "assistant",
+        "content": ai_reply
+    })
+
+    # output dari pertanyaan user
+    return {
+        "question": user_question,
+        "reply": ai_reply
+    }
