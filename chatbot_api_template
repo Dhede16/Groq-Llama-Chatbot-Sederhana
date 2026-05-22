@@ -1,55 +1,211 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from groq import Groq
 from dotenv import load_dotenv
+from typing import Optional, Dict, List
 
 
 load_dotenv()
 
 app = FastAPI()
 
+# Inisialisasi Groq client dengan API key dari environment
 client = Groq(
-    api_key="API KEY HERE"
+    api_key="API HERE"  # TODO: Ganti dengan environment variable di production
 )
 
-conversation_history = [
-    {
-        "role": "system",
-        "content": "Kamu adalah Jarvis AI."
-    }
-]
+# Dictionary untuk menyimpan conversation history per user (user_id sebagai key)
+# Ini memastikan setiap user memiliki percakapan terpisah dengan Lex
+user_conversations: Dict[str, List] = {}
 
-# hapus jika hanya ingin hardcode question
+
 class ChatRequest(BaseModel):
+    """
+    Schema untuk request chat dari Laravel backend
+    
+    Fields:
+    - message: Pesan dari user
+    - user_id: ID user (dari session Laravel)
+    - lesson_id: ID lesson/subject yang sedang dikerjakan (contoh: "mathematics_101")
+    - problem_id: ID soal yang sedang dikerjakan
+    - problem_title: Judul/nama soal
+    - problem_description: Deskripsi lengkap soal
+    - user_answer: Jawaban user saat ini (optional, untuk feedback)
+    - difficulty: Level kesulitan soal (easy, medium, hard)
+    """
     message: str
+    user_id: str
+    lesson_id: str
+    problem_id: Optional[str] = None
+    problem_title: Optional[str] = None
+    problem_description: Optional[str] = None
+    user_answer: Optional[str] = None
+    difficulty: Optional[str] = None
+
+
+def get_lex_system_prompt(lesson_id: str, problem_title: Optional[str]) -> str:
+    """
+    Generate system prompt untuk Lex yang disesuaikan dengan konteks pembelajaran
+    
+    Lex adalah T-rex yang ramah dan menjadi mentor. Prompt ini membuat Lex aware
+    dengan:
+    - Subject/lesson yang sedang diambil user
+    - Soal spesifik yang sedang dikerjakan
+    - Tone yang supportif dan motivasi (gamification)
+    """
+    base_prompt = "Kamu adalah Lex, seorang T-rex yang ramah dan menjadi mentor di platform EduQuest."
+    
+    if lesson_id and problem_title:
+        context_prompt = (
+            f"\nUser sedang mengerjakan soal '{problem_title}' pada lesson '{lesson_id}'. "
+            f"Berikan jawaban yang spesifik dan membantu tanpa langsung memberikan jawabannya. "
+            f"Dorong user untuk berpikir dengan memberikan hint atau pertanyaan socratic. "
+            f"Gunakan tone yang supportif dan fun seperti di RPG game."
+        )
+    else:
+        context_prompt = (
+            "\nBerikan jawaban yang helpful dan supportif. "
+            "Gunakan tone yang ramah seperti mentor RPG yang memotivasi."
+        )
+    
+    closing = (
+        "\nJangan lupa untuk memberikan encouragement dan tambahkan emoji dinosaurus 🦖 "
+        "di akhir jawaban untuk membuat suasana lebih fun!"
+    )
+    
+    return base_prompt + context_prompt + closing
+
+
+def initialize_user_conversation(user_id: str, lesson_id: str, problem_title: Optional[str]) -> None:
+    """
+    Inisialisasi conversation history untuk user baru atau reset jika diperlukan
+    
+    Setiap user memiliki conversation history terpisah untuk menjaga context awareness
+    """
+    if user_id not in user_conversations:
+        user_conversations[user_id] = [
+            {
+                "role": "system",
+                "content": get_lex_system_prompt(lesson_id, problem_title)
+            }
+        ]
+
+
+def get_user_conversation(user_id: str) -> List:
+    """
+    Ambil conversation history untuk user tertentu
+    """
+    if user_id not in user_conversations:
+        return []
+    return user_conversations[user_id]
+
+
+def build_context_message(req: ChatRequest) -> str:
+    """
+    Build pesan konteks tambahan yang diletakkan sebelum user message
+    
+    Ini membantu Lex memahami soal apa yang sedang dikerjakan user tanpa
+    user harus menjelaskan soal setiap kali bertanya
+    """
+    context_parts = []
+    
+    if req.problem_title:
+        context_parts.append(f"📚 Soal: {req.problem_title}")
+    
+    if req.problem_description:
+        context_parts.append(f"📖 Deskripsi: {req.problem_description}")
+    
+    if req.difficulty:
+        difficulty_emoji = {"easy": "🟢", "medium": "🟡", "hard": "🔴"}.get(req.difficulty, "⭐")
+        context_parts.append(f"Kesulitan: {difficulty_emoji} {req.difficulty}")
+    
+    if req.user_answer:
+        context_parts.append(f"Jawaban user: {req.user_answer}")
+    
+    # Return context message jika ada context, jika tidak return empty string
+    return "\n".join(context_parts) if context_parts else ""
+
 
 @app.post("/chat")
-async def chat(req: ChatRequest): # hapus req: ChatRequest jika ingin hardcode question
+async def chat(req: ChatRequest):
+    """
+    Main endpoint untuk chat dengan Lex
+    
+    Flow:
+    1. Initialize conversation untuk user jika baru
+    2. Build context dari soal yang sedang dikerjakan
+    3. Append user message ke conversation history
+    4. Send ke Groq API
+    5. Simpan AI reply ke conversation history
+    6. Return response
+    """
+    try:
+        # Step 1: Initialize atau update conversation untuk user
+        initialize_user_conversation(req.user_id, req.lesson_id, req.problem_title)
+        
+        # Step 2: Get conversation history user
+        conversation = get_user_conversation(req.user_id)
+        
+        # Step 3: Build context message dari soal yang sedang dikerjakan
+        context_message = build_context_message(req)
+        
+        # Step 4: Append user message ke history
+        # Jika ada context, tambahkan context message sebagai context sebelum user question
+        if context_message:
+            conversation.append({
+                "role": "user",
+                "content": f"{context_message}\n\nPertanyaan user: {req.message}"
+            })
+        else:
+            conversation.append({
+                "role": "user",
+                "content": req.message
+            })
+        
+        # Step 5: Call Groq API untuk generate response
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=conversation,
+            max_tokens=1024,  # Batasi token untuk response yang concise
+            temperature=0.7   # Sedikit creative tapi tetap akurat
+        )
+        
+        # Step 6: Extract AI reply
+        ai_reply = response.choices[0].message.content
+        
+        # Step 7: Simpan AI reply ke conversation history untuk future context
+        conversation.append({
+            "role": "assistant",
+            "content": ai_reply
+        })
+        
+        # Step 8: Update conversation history di memory
+        user_conversations[req.user_id] = conversation
+        
+        # Return response dengan detail yang berguna
+        return {
+            "success": True,
+            "question": req.message,
+            "problem_context": {
+                "lesson_id": req.lesson_id,
+                "problem_id": req.problem_id,
+                "problem_title": req.problem_title
+            },
+            "reply": ai_reply
+        }
+    
+    except Exception as e:
+        # Error handling untuk API issues
+        raise HTTPException(status_code=500, detail=f"Error calling Lex: {str(e)}")
 
-    # pertanyaan hardcode
-    hardcode_question = ""
-    # Variabel pertanyaan user 
-    user_question = req.message
 
-    conversation_history.append({
-        "role": "user",
-        "content": user_question # + tambahkan hardcode question jika ingin 
-    })
-
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=conversation_history
-    )
-
-    ai_reply = response.choices[0].message.content
-
-    conversation_history.append({
-        "role": "assistant",
-        "content": ai_reply
-    })
-
-    # output dari pertanyaan user
+@app.get("/health")
+async def health_check():
+    """
+    Health check endpoint untuk monitoring
+    """
     return {
-        "question": user_question,
-        "reply": ai_reply
+        "status": "healthy",
+        "service": "EduQuest AI Chatbot (Lex)",
+        "active_users": len(user_conversations)
     }
